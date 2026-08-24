@@ -20,8 +20,10 @@ use egui::ViewportId;
 use crate::{converter, export, mesh_loader};
 
 pub fn run_gui() -> anyhow::Result<()> {
-    env_logger::init();
-
+    // NOTE: the logger is already initialized once in `main()`. Calling
+    // `env_logger::init()` a second time here would panic ("attempted to
+    // set a logger after the logging system was already initialized"),
+    // crashing the app almost immediately after launch.
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
 

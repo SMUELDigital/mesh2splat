@@ -1,6 +1,6 @@
 [package]
 name = "mesh2splat"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 authors = ["Mesh2Splat Contributors"]
 description = "WebGPU-powered mesh to 3D Gaussian Splatting converter for macOS and Windows"
