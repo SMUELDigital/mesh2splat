@@ -1,0 +1,47 @@
+[package]
+name = "mesh2splat"
+version = "1.0.0"
+edition = "2021"
+authors = ["Mesh2Splat Contributors"]
+description = "WebGPU-powered mesh to 3D Gaussian Splatting converter for macOS and Windows"
+license = "MIT"
+repository = "https://github.com/SMUELDigital/mesh2splat"
+
+[dependencies]
+# Error handling
+anyhow = "1" # ok to write "1.0" too [web:161]
+
+# Logging
+env_logger = "0.11"
+log = "0.4"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Core
+glam = "0.29"
+gltf = "1.4"
+bytemuck = { version = "1.18", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+futures = "0.3"
+pollster = "0.3"
+
+# GPU + windowing + UI
+wgpu = "22.1.0"
+winit = "0.30.12"
+egui = "0.29.1"
+egui-wgpu = "0.29.1"
+egui-winit = "0.29.1"
+
+# Native file dialogs
+rfd = "0.15"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[[bin]]
+name = "mesh2splat"
+path = "src/main.rs"

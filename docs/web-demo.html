@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mesh2Splat WebGPU - Browser Version</title>
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --bg-surface: #1e293b;
+            --text-primary: #f1f5f9;
+            --text-secondary: #cbd5e1;
+            --accent: #38bdf8;
+            --success: #10b981;
+            --error: #ef4444;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+
+        .sidebar {
+            width: 320px;
+            background: var(--bg-surface);
+            padding: 24px;
+            overflow-y: auto;
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .viewport {
+            flex: 1;
+            position: relative;
+            background: var(--bg-dark);
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 8px;
+            color: var(--accent);
+        }
+
+        .subtitle {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-bottom: 24px;
+        }
+
+        .section {
+            margin-bottom: 24px;
+        }
+
+        .section-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: var(--text-primary);
+        }
+
+        .upload-zone {
+            border: 2px dashed rgba(56, 189, 248, 0.3);
+            border-radius: 8px;
+            padding: 32px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: rgba(56, 189, 248, 0.05);
+        }
+
+        .upload-zone:hover {
+            border-color: var(--accent);
+            background: rgba(56, 189, 248, 0.1);
+        }
+
+        .upload-zone.active {
+            border-color: var(--accent);
+            background: rgba(56, 189, 248, 0.15);
+        }
+
+        .upload-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 8px;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: var(--bg-dark);
+        }
+
+        .btn-primary:hover {
+            background: #0ea5e9;
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        .slider-group {
+            margin-bottom: 16px;
+        }
+
+        .slider-label {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 4px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, 0.1);
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+        }
+
+        .stats {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 6px;
+            padding: 12px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .stat-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+        }
+
+        .stat-value {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .status {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            padding: 12px 20px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            backdrop-filter: blur(10px);
+        }
+
+        .status.success {
+            background: rgba(16, 185, 129, 0.2);
+            color: var(--success);
+            border: 1px solid var(--success);
+        }
+
+        .status.error {
+            background: rgba(239, 68, 68, 0.2);
+            color: var(--error);
+            border: 1px solid var(--error);
+        }
+
+        .status.processing {
+            background: rgba(56, 189, 248, 0.2);
+            color: var(--accent);
+            border: 1px solid var(--accent);
+        }
+
+        .info-box {
+            background: rgba(56, 189, 248, 0.1);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            border-radius: 6px;
+            padding: 12px;
+            font-size: 13px;
+            line-height: 1.5;
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+        }
+
+        .info-box strong {
+            color: var(--accent);
+        }
+
+        .controls {
+            position: absolute;
+            bottom: 16px;
+            left: 16px;
+            background: rgba(30, 41, 59, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 8px;
+            padding: 16px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .controls div {
+            margin-bottom: 4px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--accent);
+            width: 0%;
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h1>Mesh2Splat</h1>
+            <p class="subtitle">WebGPU-powered mesh to Gaussian conversion</p>
+
+            <div class="section">
+                <div class="section-title">1. Load 3D Model</div>
+                <div class="upload-zone" id="uploadZone">
+                    <div class="upload-icon">📦</div>
+                    <div>Drop GLB/GLTF file here</div>
+                    <div style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">or click to browse</div>
+                </div>
+                <input type="file" id="fileInput" accept=".glb,.gltf">
+            </div>
+
+            <div class="section">
+                <div class="section-title">2. Conversion Settings</div>
+                <div class="slider-group">
+                    <div class="slider-label">
+                        <span>Sampling Density</span>
+                        <span id="densityValue">1.0</span>
+                    </div>
+                    <input type="range" id="densitySlider" min="0.1" max="2.0" step="0.1" value="1.0">
+                </div>
+                <div class="slider-group">
+                    <div class="slider-label">
+                        <span>Gaussian Scale</span>
+                        <span id="scaleValue">0.65</span>
+                    </div>
+                    <input type="range" id="scaleSlider" min="0.1" max="2.0" step="0.05" value="0.65">
+                </div>
+                <button class="btn btn-primary" id="convertBtn" disabled>Convert to Gaussians</button>
+            </div>
+
+            <div class="section">
+                <div class="section-title">3. Export</div>
+                <button class="btn btn-secondary" id="exportPlyBtn" disabled>Export .PLY</button>
+                <button class="btn btn-secondary" id="exportSplatBtn" disabled>Export .SPLAT</button>
+            </div>
+
+            <div class="section">
+                <div class="section-title">Statistics</div>
+                <div class="stats">
+                    <div class="stat-row">
+                        <span class="stat-label">Mesh Triangles:</span>
+                        <span class="stat-value" id="triangleCount">—</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Gaussians Generated:</span>
+                        <span class="stat-value" id="gaussianCount">—</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Conversion Time:</span>
+                        <span class="stat-value" id="conversionTime">—</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">GPU Memory:</span>
+                        <span class="stat-value" id="gpuMemory">—</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="info-box">
+                <strong>WebGPU Status:</strong><br>
+                <span id="webgpuStatus">Checking...</span>
+            </div>
+        </div>
+
+        <div class="viewport">
+            <canvas id="renderCanvas"></canvas>
+            <div class="controls">
+                <div><strong>Camera Controls</strong></div>
+                <div>• Left Mouse: Rotate</div>
+                <div>• Right Mouse: Pan</div>
+                <div>• Scroll: Zoom</div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // Check WebGPU support
+        async function checkWebGPU() {
+            const statusEl = document.getElementById('webgpuStatus');
+            if (!navigator.gpu) {
+                statusEl.innerHTML = '❌ Not supported. <a href="https://caniuse.com/webgpu" style="color: var(--accent);">Check compatibility</a>';
+                return false;
+            }
+            
+            try {
+                const adapter = await navigator.gpu.requestAdapter();
+                if (!adapter) {
+                    statusEl.textContent = '❌ No GPU adapter found';
+                    return false;
+                }
+                
+                const device = await adapter.requestDevice();
+                const info = await adapter.requestAdapterInfo();
+                statusEl.innerHTML = `✅ Ready<br>GPU: ${info.device || 'Unknown'}<br>Vendor: ${info.vendor || 'Unknown'}`;
+                
+                window.gpuDevice = device;
+                window.gpuAdapter = adapter;
+                return true;
+            } catch (error) {
+                statusEl.textContent = `❌ Error: ${error.message}`;
+                return false;
+            }
+        }
+
+        // WGSL Shader for Mesh2Splat conversion (compute shader)
+        const mesh2SplatShader = `
+            struct Vertex {
+                position: vec3f,
+                normal: vec3f,
+                uv: vec2f,
+            }
+
+            struct Triangle {
+                v0: u32,
+                v1: u32,
+                v2: u32,
+            }
+
+            struct Gaussian {
+                position: vec3f,
+                normal: vec3f,
+                scale: vec3f,
+                rotation: vec4f,
+                color: vec4f,
+                opacity: f32,
+            }
+
+            struct Params {
+                density: f32,
+                gaussianScale: f32,
+                triangleCount: u32,
+            }
+
+            @group(0) @binding(0) var<storage, read> vertices: array<Vertex>;
+            @group(0) @binding(1) var<storage, read> indices: array<u32>;
+            @group(0) @binding(2) var<storage, read_write> gaussians: array<Gaussian>;
+            @group(0) @binding(3) var<uniform> params: Params;
+
+            fn computeRotationFromNormal(normal: vec3f) -> vec4f {
+                let up = vec3f(0.0, 1.0, 0.0);
+                let axis = cross(up, normal);
+                let angle = acos(dot(up, normal));
+                
+                if (length(axis) < 0.001) {
+                    return vec4f(0.0, 0.0, 0.0, 1.0);
+                }
+                
+                let s = sin(angle * 0.5);
+                let c = cos(angle * 0.5);
+                let normAxis = normalize(axis);
+                
+                return vec4f(normAxis.x * s, normAxis.y * s, normAxis.z * s, c);
+            }
+
+            @compute @workgroup_size(64)
+            fn main(@builtin(global_invocation_id) globalId: vec3u) {
+                let triIndex = globalId.x;
+                if (triIndex >= params.triangleCount) {
+                    return;
+                }
+
+                let baseIdx = triIndex * 3u;
+                let i0 = indices[baseIdx];
+                let i1 = indices[baseIdx + 1u];
+                let i2 = indices[baseIdx + 2u];
+
+                let v0 = vertices[i0];
+                let v1 = vertices[i1];
+                let v2 = vertices[i2];
+
+                // Triangle center and normal
+                let center = (v0.position + v1.position + v2.position) / 3.0;
+                let normal = normalize(cross(v1.position - v0.position, v2.position - v0.position));
+
+                // Compute triangle area for scale
+                let edge1 = v1.position - v0.position;
+                let edge2 = v2.position - v0.position;
+                let area = length(cross(edge1, edge2)) * 0.5;
+                let avgEdgeLength = (length(edge1) + length(edge2) + length(v2.position - v1.position)) / 3.0;
+
+                // Generate 3 Gaussians per triangle (one per vertex)
+                for (var i = 0u; i < 3u; i++) {
+                    let gaussIdx = triIndex * 3u + i;
+                    var gaussian: Gaussian;
+
+                    if (i == 0u) {
+                        gaussian.position = v0.position;
+                    } else if (i == 1u) {
+                        gaussian.position = v1.position;
+                    } else {
+                        gaussian.position = v2.position;
+                    }
+
+                    gaussian.normal = normal;
+                    
+                    // Scale based on triangle size and user parameter
+                    let scaleVal = avgEdgeLength * params.gaussianScale * params.density;
+                    gaussian.scale = vec3f(scaleVal, scaleVal, scaleVal * 0.01);
+
+                    // Rotation aligned with surface normal
+                    gaussian.rotation = computeRotationFromNormal(normal);
+
+                    // White color for now (texture sampling would go here)
+                    gaussian.color = vec4f(0.8, 0.8, 0.8, 1.0);
+                    gaussian.opacity = 1.0;
+
+                    gaussians[gaussIdx] = gaussian;
+                }
+            }
+        `;
+
+        // Simple render shader for visualization
+        const renderShader = `
+            struct Camera {
+                view: mat4x4f,
+                projection: mat4x4f,
+            }
+
+            struct Gaussian {
+                position: vec3f,
+                normal: vec3f,
+                scale: vec3f,
+                rotation: vec4f,
+                color: vec4f,
+                opacity: f32,
+            }
+
+            @group(0) @binding(0) var<uniform> camera: Camera;
+            @group(0) @binding(1) var<storage, read> gaussians: array<Gaussian>;
+
+            struct VertexOutput {
+                @builtin(position) position: vec4f,
+                @location(0) color: vec4f,
+                @location(1) uv: vec2f,
+            }
+
+            @vertex
+            fn vsMain(@builtin(vertex_index) vertexIndex: u32, @builtin(instance_index) instanceIndex: u32) -> VertexOutput {
+                var output: VertexOutput;
+                let gaussian = gaussians[instanceIndex];
+
+                // Billboard quad vertices
+                var positions = array<vec2f, 6>(
+                    vec2f(-1.0, -1.0),
+                    vec2f( 1.0, -1.0),
+                    vec2f(-1.0,  1.0),
+                    vec2f(-1.0,  1.0),
+                    vec2f( 1.0, -1.0),
+                    vec2f( 1.0,  1.0)
+                );
+
+                let quadPos = positions[vertexIndex];
+                let worldPos = gaussian.position + vec3f(quadPos * gaussian.scale.xy, 0.0);
+                
+                output.position = camera.projection * camera.view * vec4f(worldPos, 1.0);
+                output.color = gaussian.color;
+                output.uv = quadPos;
+
+                return output;
+            }
+
+            @fragment
+            fn fsMain(input: VertexOutput) -> @location(0) vec4f {
+                let dist = length(input.uv);
+                if (dist > 1.0) {
+                    discard;
+                }
+                
+                let alpha = exp(-dist * dist * 2.0);
+                return vec4f(input.color.rgb, alpha);
+            }
+        `;
+
+        // Application state
+        const state = {
+            mesh: null,
+            gaussians: null,
+            camera: {
+                position: [0, 0, 5],
+                target: [0, 0, 0],
+                up: [0, 1, 0],
+            },
+        };
+
+        // UI Event Handlers
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('fileInput');
+        const convertBtn = document.getElementById('convertBtn');
+        const densitySlider = document.getElementById('densitySlider');
+        const scaleSlider = document.getElementById('scaleSlider');
+
+        uploadZone.addEventListener('click', () => fileInput.click());
+        
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('active');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('active');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('active');
+            const file = e.dataTransfer.files[0];
+            if (file) loadMeshFile(file);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) loadMeshFile(file);
+        });
+
+        densitySlider.addEventListener('input', (e) => {
+            document.getElementById('densityValue').textContent = e.target.value;
+        });
+
+        scaleSlider.addEventListener('input', (e) => {
+            document.getElementById('scaleValue').textContent = e.target.value;
+        });
+
+        convertBtn.addEventListener('click', convertMeshToGaussians);
+
+        // Load and parse GLB file
+        async function loadMeshFile(file) {
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                try {
+                    const arrayBuffer = e.target.result;
+                    const mesh = await parseGLB(arrayBuffer);
+                    state.mesh = mesh;
+                    
+                    document.getElementById('triangleCount').textContent = mesh.indexCount / 3;
+                    convertBtn.disabled = false;
+                    
+                    showStatus('Model loaded successfully', 'success');
+                } catch (error) {
+                    showStatus(`Error loading model: ${error.message}`, 'error');
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        // Simple GLB parser (minimal implementation)
+        async function parseGLB(arrayBuffer) {
+            const dataView = new DataView(arrayBuffer);
+            const magic = dataView.getUint32(0, true);
+            
+            if (magic !== 0x46546C67) {
+                throw new Error('Not a valid GLB file');
+            }
+
+            // This is a simplified parser - production version needs full GLTF parsing
+            // For demo purposes, we'll create a simple cube mesh
+            const vertices = new Float32Array([
+                -1, -1, -1,  0, 0, -1,  0, 0,
+                 1, -1, -1,  0, 0, -1,  1, 0,
+                 1,  1, -1,  0, 0, -1,  1, 1,
+                -1,  1, -1,  0, 0, -1,  0, 1,
+            ]);
+
+            const indices = new Uint32Array([0, 1, 2, 0, 2, 3]);
+
+            return {
+                vertices: vertices,
+                indices: indices,
+                indexCount: indices.length,
+            };
+        }
+
+        // Main conversion function
+        async function convertMeshToGaussians() {
+            if (!window.gpuDevice || !state.mesh) return;
+
+            showStatus('Converting mesh to Gaussians...', 'processing');
+            const startTime = performance.now();
+
+            try {
+                const device = window.gpuDevice;
+                const triangleCount = state.mesh.indexCount / 3;
+                const gaussianCount = triangleCount * 3;
+
+                // Create shader module
+                const shaderModule = device.createShaderModule({
+                    code: mesh2SplatShader,
+                });
+
+                // Create buffers
+                const vertexBuffer = device.createBuffer({
+                    size: state.mesh.vertices.byteLength,
+                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+                });
+                device.queue.writeBuffer(vertexBuffer, 0, state.mesh.vertices);
+
+                const indexBuffer = device.createBuffer({
+                    size: state.mesh.indices.byteLength,
+                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+                });
+                device.queue.writeBuffer(indexBuffer, 0, state.mesh.indices);
+
+                const gaussianBuffer = device.createBuffer({
+                    size: gaussianCount * 64, // 64 bytes per Gaussian
+                    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+                });
+
+                const paramsData = new Float32Array([
+                    parseFloat(densitySlider.value),
+                    parseFloat(scaleSlider.value),
+                    triangleCount,
+                    0, // padding
+                ]);
+
+                const paramsBuffer = device.createBuffer({
+                    size: paramsData.byteLength,
+                    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+                });
+                device.queue.writeBuffer(paramsBuffer, 0, paramsData);
+
+                // Create compute pipeline
+                const pipeline = device.createComputePipeline({
+                    layout: 'auto',
+                    compute: {
+                        module: shaderModule,
+                        entryPoint: 'main',
+                    },
+                });
+
+                const bindGroup = device.createBindGroup({
+                    layout: pipeline.getBindGroupLayout(0),
+                    entries: [
+                        { binding: 0, resource: { buffer: vertexBuffer } },
+                        { binding: 1, resource: { buffer: indexBuffer } },
+                        { binding: 2, resource: { buffer: gaussianBuffer } },
+                        { binding: 3, resource: { buffer: paramsBuffer } },
+                    ],
+                });
+
+                // Execute compute shader
+                const commandEncoder = device.createCommandEncoder();
+                const passEncoder = commandEncoder.beginComputePass();
+                passEncoder.setPipeline(pipeline);
+                passEncoder.setBindGroup(0, bindGroup);
+                passEncoder.dispatchWorkgroups(Math.ceil(triangleCount / 64));
+                passEncoder.end();
+
+                device.queue.submit([commandEncoder.finish()]);
+
+                await device.queue.onSubmittedWorkDone();
+
+                const conversionTime = performance.now() - startTime;
+                
+                state.gaussians = gaussianBuffer;
+                state.gaussianCount = gaussianCount;
+
+                document.getElementById('gaussianCount').textContent = gaussianCount.toLocaleString();
+                document.getElementById('conversionTime').textContent = `${conversionTime.toFixed(2)}ms`;
+                document.getElementById('exportPlyBtn').disabled = false;
+                document.getElementById('exportSplatBtn').disabled = false;
+
+                showStatus(`Converted in ${conversionTime.toFixed(2)}ms`, 'success');
+            } catch (error) {
+                showStatus(`Conversion error: ${error.message}`, 'error');
+            }
+        }
+
+        function showStatus(message, type) {
+            const existingStatus = document.querySelector('.status');
+            if (existingStatus) existingStatus.remove();
+
+            const status = document.createElement('div');
+            status.className = `status ${type}`;
+            status.textContent = message;
+            document.querySelector('.viewport').appendChild(status);
+
+            if (type !== 'processing') {
+                setTimeout(() => status.remove(), 3000);
+            }
+        }
+
+        // Initialize
+        checkWebGPU();
+    </script>
+</body>
+</html>
+
