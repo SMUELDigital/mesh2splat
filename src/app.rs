@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context;
@@ -32,7 +33,11 @@ pub fn run_gui() -> anyhow::Result<()> {
 
 #[derive(Default)]
 struct App {
-    window: Option<Window>,
+    // The window is reference-counted so it can be handed to wgpu's
+    // `create_surface`, which requires a `'static` target. Cloning the Arc
+    // (cheap) also lets us drop the borrow on `self` before calling
+    // `&mut self` methods such as `render`.
+    window: Option<Arc<Window>>,
     window_id: Option<WindowId>,
 
     // wgpu
@@ -68,10 +73,11 @@ impl ApplicationHandler for App {
         let window = event_loop
             .create_window(
                 Window::default_attributes()
-                    .with_title("Mesh2Splat (macOS)")
+                    .with_title("Mesh2Splat")
                     .with_inner_size(PhysicalSize::new(1200, 800)),
             )
             .expect("create window");
+        let window = Arc::new(window);
 
         let window_id = window.id();
 
@@ -103,13 +109,13 @@ impl ApplicationHandler for App {
             return;
         }
 
-        match event {
+        match &event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
                 return;
             }
             WindowEvent::Resized(size) => {
-                self.resize(size);
+                self.resize(*size);
             }
             WindowEvent::DroppedFile(path) => {
                 self.input_path = Some(path.clone());
@@ -117,18 +123,17 @@ impl ApplicationHandler for App {
                 self.status = format!("Selected: {}", path.display());
             }
             WindowEvent::RedrawRequested => {
-                let window = match self.window.as_ref() {
-                    Some(w) => w,
-                    None => return,
+                // Clone the Arc so `window` is an owned handle independent of
+                // `self`, allowing the following `&mut self` calls.
+                let Some(window) = self.window.clone() else {
+                    return;
                 };
 
                 if let Some(egui_state) = self.egui_state.as_mut() {
-                    // Feed the event to egui (for completeness you’d route all events; ok for now)
-                    // NOTE: for full input handling, call egui_state.on_window_event on every event.
-                    let _ = egui_state.on_window_event(window, &WindowEvent::RedrawRequested);
+                    let _ = egui_state.on_window_event(window.as_ref(), &event);
                 }
 
-                if let Err(e) = self.render(window) {
+                if let Err(e) = self.render(window.as_ref()) {
                     self.error = Some(format!("{e:?}"));
                     self.status = "Render error".to_string();
                 }
@@ -137,20 +142,26 @@ impl ApplicationHandler for App {
             _ => {}
         }
 
-        // For proper egui input, forward every event:
-        if let (Some(window), Some(egui_state)) = (self.window.as_ref(), self.egui_state.as_mut()) {
-            let _ = egui_state.on_window_event(window, &event);
+        // For proper egui input, forward every other event:
+        if let (Some(window), Some(egui_state)) = (self.window.as_ref(), self.egui_state.as_mut())
+        {
+            let _ = egui_state.on_window_event(window.as_ref(), &event);
             window.request_redraw();
         }
     }
 }
 
 impl App {
-    fn init_gpu_and_egui(&mut self, window: &Window) -> anyhow::Result<()> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+    fn init_gpu_and_egui(&mut self, window: &Arc<Window>) -> anyhow::Result<()> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            // PRIMARY selects Metal on macOS and DirectX 12 / Vulkan on Windows.
+            backends: wgpu::Backends::PRIMARY,
+            ..Default::default()
+        });
 
-        // wgpu 22 pattern: create_surface(window)
-        let surface = unsafe { instance.create_surface(window) }?;
+        // Cloning the Arc gives wgpu an owned, `'static` surface target so the
+        // resulting `Surface<'static>` can be stored directly on `self`.
+        let surface = instance.create_surface(Arc::clone(window))?;
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -190,18 +201,16 @@ impl App {
         };
         surface.configure(&device, &config);
 
-        // egui-winit 0.29.1 signature (your compiler output)
         let viewport_id = ViewportId::ROOT;
         let egui_state = EguiWinitState::new(
             self.egui_ctx.clone(),
             viewport_id,
-            window,
+            window.as_ref(),
             None,
             None,
             None,
         );
 
-        // egui-wgpu 0.29.1 signature (your compiler output: extra bool)
         let egui_renderer = EguiRenderer::new(&device, format, None, 1, false);
 
         self.instance = Some(instance);
@@ -218,12 +227,25 @@ impl App {
     }
 
     fn resize(&mut self, size: PhysicalSize<u32>) {
-        let (Some(surface), Some(device), Some(config)) =
-            (self.surface.as_ref(), self.device.as_ref(), self.config.as_mut())
-        else {
+        let (Some(surface), Some(device)) = (self.surface.as_ref(), self.device.as_ref()) else {
+            return;
+        };
+        let Some(config) = self.config.as_mut() else {
             return;
         };
 
+        Self::resize_surface(surface, device, config, size);
+    }
+
+    /// Pure helper that takes explicit borrows instead of `&mut self`, so it
+    /// can be called from within `render()` while other `self` fields are
+    /// already borrowed (see comment there).
+    fn resize_surface(
+        surface: &wgpu::Surface<'static>,
+        device: &wgpu::Device,
+        config: &mut wgpu::SurfaceConfiguration,
+        size: PhysicalSize<u32>,
+    ) {
         config.width = size.width.max(1);
         config.height = size.height.max(1);
         surface.configure(device, config);
@@ -233,25 +255,36 @@ impl App {
         let device = self.device.as_ref().unwrap();
         let queue = self.queue.as_ref().unwrap();
         let surface = self.surface.as_ref().unwrap();
-        let config = self.config.as_ref().unwrap();
 
+        // Handle a lost/outdated surface (and reconfigure it) *before*
+        // borrowing `self.config` immutably below. This keeps the mutable
+        // reconfigure borrow of `self.config` fully disjoint in time from
+        // the immutable borrow used later in this function, and avoids ever
+        // needing a whole-`self` (`&mut self`) call while `device`/`surface`
+        // (borrowed from `self` above) are still live.
+        let frame = loop {
+            match surface.get_current_texture() {
+                Ok(f) => break f,
+                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                    let size = window.inner_size();
+                    let config = self.config.as_mut().unwrap();
+                    Self::resize_surface(surface, device, config, size);
+                    continue;
+                }
+                Err(e) => return Err(anyhow::anyhow!(e)),
+            }
+        };
+
+        let config = self.config.as_ref().unwrap();
         let egui_state = self.egui_state.as_mut().unwrap();
         let egui_renderer = self.egui_renderer.as_mut().unwrap();
 
-        let frame = match surface.get_current_texture() {
-            Ok(f) => f,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.resize(window.inner_size());
-                return Ok(());
-            }
-            Err(e) => return Err(anyhow::anyhow!(e)),
-        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Start egui pass (0.29 uses begin_frame/end_frame; yes deprecated warnings are fine)
         let raw_input = egui_state.take_egui_input(window);
-        self.egui_ctx.begin_frame(raw_input);
+        self.egui_ctx.begin_pass(raw_input);
 
         // Collect actions first (avoid borrow checker issues)
         enum Action {
@@ -280,48 +313,56 @@ impl App {
             });
         });
 
-        egui::SidePanel::left("left").default_width(360.0).show(&self.egui_ctx, |ui| {
-            ui.label("Input:");
-            match &self.input_path {
-                Some(p) => {
-                    ui.monospace(p.display().to_string());
+        egui::SidePanel::left("left")
+            .default_width(360.0)
+            .show(&self.egui_ctx, |ui| {
+                ui.label("Input:");
+                match &self.input_path {
+                    Some(p) => {
+                        ui.monospace(p.display().to_string());
+                    }
+                    None => {
+                        ui.colored_label(egui::Color32::GRAY, "No file selected");
+                    }
                 }
-                None => {
-                    ui.colored_label(egui::Color32::GRAY, "No file selected");
+
+                ui.add_space(10.0);
+                ui.add(egui::Slider::new(&mut self.density, 0.1..=2.0).text("Density"));
+                ui.add(egui::Slider::new(&mut self.scale, 0.1..=2.0).text("Scale"));
+
+                ui.add_space(10.0);
+
+                let can_convert = self.input_path.is_some();
+                if ui
+                    .add_enabled(can_convert, egui::Button::new("Convert"))
+                    .clicked()
+                {
+                    actions.push(Action::Convert);
                 }
-            }
 
-            ui.add_space(10.0);
-            ui.add(egui::Slider::new(&mut self.density, 0.1..=2.0).text("Density"));
-            ui.add(egui::Slider::new(&mut self.scale, 0.1..=2.0).text("Scale"));
+                let can_export = self.gaussians.is_some();
+                if ui
+                    .add_enabled(can_export, egui::Button::new("Export"))
+                    .clicked()
+                {
+                    actions.push(Action::Export);
+                }
 
-            ui.add_space(10.0);
+                ui.separator();
+                ui.label("Status:");
+                ui.label(&self.status);
 
-            let can_convert = self.input_path.is_some();
-            if ui.add_enabled(can_convert, egui::Button::new("Convert")).clicked() {
-                actions.push(Action::Convert);
-            }
-
-            let can_export = self.gaussians.is_some();
-            if ui.add_enabled(can_export, egui::Button::new("Export")).clicked() {
-                actions.push(Action::Export);
-            }
-
-            ui.separator();
-            ui.label("Status:");
-            ui.label(&self.status);
-
-            if let Some(ms) = self.last_ms {
-                ui.label(format!("Last: {:.2} ms", ms));
-            }
-            if let Some(n) = self.last_count {
-                ui.label(format!("Gaussians: {}", n));
-            }
-            if let Some(err) = &self.error {
-                ui.add_space(8.0);
-                ui.colored_label(egui::Color32::LIGHT_RED, err);
-            }
-        });
+                if let Some(ms) = self.last_ms {
+                    ui.label(format!("Last: {:.2} ms", ms));
+                }
+                if let Some(n) = self.last_count {
+                    ui.label(format!("Gaussians: {}", n));
+                }
+                if let Some(err) = &self.error {
+                    ui.add_space(8.0);
+                    ui.colored_label(egui::Color32::LIGHT_RED, err);
+                }
+            });
 
         egui::CentralPanel::default().show(&self.egui_ctx, |ui| {
             ui.heading("Preview");
@@ -330,7 +371,10 @@ impl App {
             ui.label("Drop a file, Convert, then Export.");
         });
 
-        // Apply actions (now we can mutably touch self safely)
+        // Apply actions using free functions that borrow only the specific
+        // fields they need, so they don't require an opaque `&mut self`
+        // borrow while `device`/`queue`/`egui_state`/`egui_renderer` (all
+        // borrowed from `self` above) are still in scope.
         for a in actions {
             match a {
                 Action::PickInput => {
@@ -350,21 +394,47 @@ impl App {
                     }
                 }
                 Action::Convert => {
-                    if let Err(e) = self.convert_now(device, queue) {
-                        self.error = Some(format!("{e:?}"));
-                        self.status = "Conversion failed".to_string();
+                    match Self::convert(&self.input_path, self.density, self.scale, device, queue)
+                    {
+                        Ok((gaussians, elapsed_ms)) => {
+                            self.last_ms = Some(elapsed_ms);
+                            self.last_count = Some(gaussians.len());
+                            self.gaussians = Some(gaussians);
+                            self.status = "Done.".to_string();
+                            self.error = None;
+                        }
+                        Err(e) => {
+                            self.error = Some(format!("{e:?}"));
+                            self.status = "Conversion failed".to_string();
+                        }
                     }
                 }
-                Action::Export => {
-                    if let Err(e) = self.export_now() {
-                        self.error = Some(format!("{e:?}"));
+                Action::Export => match self.gaussians.as_deref() {
+                    Some(gaussians) => match Self::export(
+                        gaussians,
+                        &self.output_dir,
+                        &self.input_path,
+                        self.export_ply,
+                        self.export_splat,
+                    ) {
+                        Ok(msg) => {
+                            self.status = msg;
+                            self.error = None;
+                        }
+                        Err(e) => {
+                            self.error = Some(format!("{e:?}"));
+                            self.status = "Export failed".to_string();
+                        }
+                    },
+                    None => {
+                        self.error = Some("Nothing to export (convert first)".to_string());
                         self.status = "Export failed".to_string();
                     }
-                }
+                },
             }
         }
 
-        let full_output = self.egui_ctx.end_frame();
+        let full_output = self.egui_ctx.end_pass();
         egui_state.handle_platform_output(window, full_output.platform_output);
 
         let paint_jobs = self
@@ -384,9 +454,15 @@ impl App {
             label: Some("encoder"),
         });
 
-        // Render pass (egui-wgpu wants an existing RenderPass) [web:175]
+        // Buffers must be updated before the render pass borrows `encoder`.
+        // (Returned command buffers are only non-empty when using egui paint
+        // callbacks, which this app doesn't use, but we submit them anyway
+        // for correctness.)
+        let egui_cmd_buffers =
+            egui_renderer.update_buffers(device, queue, &mut encoder, &paint_jobs, &screen_desc);
+
         {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("render-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
@@ -405,12 +481,13 @@ impl App {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-
-            egui_renderer.update_buffers(device, queue, &mut encoder, &paint_jobs, &screen_desc);
+            // egui-wgpu requires a `'static` render pass; this detaches it
+            // from `encoder`'s lifetime without changing recording order.
+            let mut rpass = rpass.forget_lifetime();
             egui_renderer.render(&mut rpass, &paint_jobs, &screen_desc);
         }
 
-        queue.submit(Some(encoder.finish()));
+        queue.submit(egui_cmd_buffers.into_iter().chain(Some(encoder.finish())));
         frame.present();
 
         for id in &full_output.textures_delta.free {
@@ -420,70 +497,65 @@ impl App {
         Ok(())
     }
 
-    fn convert_now(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> anyhow::Result<()> {
-        let Some(input_path) = self.input_path.clone() else {
+    /// Loads the input mesh and converts it to Gaussians on the GPU.
+    /// Returns the Gaussians plus the elapsed conversion time in ms.
+    fn convert(
+        input_path: &Option<PathBuf>,
+        density: f32,
+        scale: f32,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> anyhow::Result<(Vec<converter::Gaussian>, f32)> {
+        let Some(input_path) = input_path.clone() else {
             anyhow::bail!("No input selected");
         };
 
-        self.error = None;
-        self.status = "Loading mesh…".to_string();
-
-        // IMPORTANT: map this to your actual loader function name.
-        // Your compile error says load_mesh_from_path doesn't exist.
-        // Search in src/mesh_loader.rs for the correct function and replace this call.
         let mesh = mesh_loader::load_mesh(&input_path)
             .with_context(|| format!("Failed to load mesh: {}", input_path.display()))?;
 
-        self.status = "Converting…".to_string();
         let start = Instant::now();
+        let gaussians = converter::convert_mesh_to_gaussians(device, queue, &mesh, density, scale)
+            .map_err(|e| anyhow::anyhow!("{e}"))?; // avoid Box<dyn Error> Send/Sync issues
 
-        let gaussians = converter::convert_mesh_to_gaussians(
-            device,
-            queue,
-            &mesh,
-            self.density,
-            self.scale,
-        )
-        .map_err(|e| anyhow::anyhow!("{e}"))?; // avoid Box<dyn Error> Send/Sync issues
-
-        self.last_ms = Some(start.elapsed().as_secs_f32() * 1000.0);
-        self.last_count = Some(gaussians.len());
-        self.gaussians = Some(gaussians);
-
-        self.status = "Done.".to_string();
-        Ok(())
+        let elapsed_ms = start.elapsed().as_secs_f32() * 1000.0;
+        Ok((gaussians, elapsed_ms))
     }
 
-    fn export_now(&mut self) -> anyhow::Result<()> {
-        let Some(gaussians) = self.gaussians.as_ref() else {
-            anyhow::bail!("Nothing to export (convert first)");
-        };
+    /// Writes the converted Gaussians to the requested output formats.
+    /// Returns a status message describing what was written.
+    fn export(
+        gaussians: &[converter::Gaussian],
+        output_dir: &Option<PathBuf>,
+        input_path: &Option<PathBuf>,
+        export_ply: bool,
+        export_splat: bool,
+    ) -> anyhow::Result<String> {
+        let out_dir = output_dir
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let out_dir = self.output_dir.clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        });
-
-        let stem = self
-            .input_path
+        let stem = input_path
             .as_ref()
             .and_then(|p| p.file_stem())
             .and_then(|s| s.to_str())
             .unwrap_or("output");
 
-        if self.export_ply {
+        let mut message = String::new();
+
+        if export_ply {
             let ply_path = out_dir.join(format!("{stem}.ply"));
             export::ply::write_ply(gaussians, &ply_path)
                 .with_context(|| format!("Failed to write {}", ply_path.display()))?;
-            self.status = format!("Wrote {}", ply_path.display());
+            message = format!("Wrote {}", ply_path.display());
         }
 
-        if self.export_splat {
+        if export_splat {
             let splat_path = out_dir.join(format!("{stem}.splat"));
             export::splat::write_splat(gaussians, &splat_path)
                 .with_context(|| format!("Failed to write {}", splat_path.display()))?;
-            self.status = format!("Wrote {}", splat_path.display());
+            message = format!("Wrote {}", splat_path.display());
         }
 
-        Ok(())
+        Ok(message)
     }
 }

@@ -1,5 +1,5 @@
-// Mesh2Splat macOS - Main Entry Point
-// WebGPU-powered mesh to 3D Gaussian Splatting converter
+// Mesh2Splat - Main Entry Point
+// WebGPU-powered mesh to 3D Gaussian Splatting converter (Windows + macOS)
 
 mod app;
 mod converter;
@@ -83,7 +83,7 @@ fn run_cli_conversion(
     // Load mesh
     print!("Loading mesh... ");
     let start = Instant::now();
-    let mesh = match mesh_loader::load_gltf(&input) {
+    let mesh = match mesh_loader::load_mesh(&input) {
         Ok(m) => {
             println!("✓ ({:.2}ms)", start.elapsed().as_secs_f32() * 1000.0);
             m
@@ -165,13 +165,16 @@ fn run_cli_conversion(
 
 fn run_gui_app() {
     println!("Starting Mesh2Splat GUI...");
-    app::run_gui()?;
-
+    if let Err(e) = app::run_gui() {
+        eprintln!("GUI error: {e:?}");
+        std::process::exit(1);
+    }
 }
 
 async fn init_webgpu() -> Result<(wgpu::Device, wgpu::Queue), Box<dyn std::error::Error>> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::METAL, // macOS uses Metal backend
+        // PRIMARY picks Metal on macOS and DirectX 12 / Vulkan on Windows automatically.
+        backends: wgpu::Backends::PRIMARY,
         ..Default::default()
     });
     
